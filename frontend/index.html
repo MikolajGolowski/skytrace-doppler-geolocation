@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SkyTrace — Acoustic Aircraft Doppler Geolocation</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-dot"></div>
+      <div>
+        <h1>SKYTRACE <span class="badge">OSINT DOPPLER</span></h1>
+        <p class="subtitle">Sub-audible Aircraft Acoustic Geolocation &amp; ADS-B Retarded-Time Solver</p>
+      </div>
+    </div>
+
+    <div class="topbar-actions">
+      <select id="demoPreset" class="select-input" title="Synthetic Benchmark Preset">
+        <option value="quick_two_event">Demo: Two-Event (90s offset, fast)</option>
+        <option value="colsto_920s">Demo: Colsto 920s Offset (17 min)</option>
+        <option value="single_1min_faint">Demo: 1-Min Faint Single Flight</option>
+      </select>
+      <button id="btnLoadDemo" class="btn btn-primary">Load Demo</button>
+
+      <label class="btn btn-secondary file-btn">
+        Upload Audio/Video
+        <input id="audioUpload" type="file" accept="audio/*,video/*" hidden />
+      </label>
+
+      <label class="btn btn-secondary file-btn">
+        Upload ADS-B
+        <input id="adsbUpload" type="file" accept=".json,.gz,.csv,.parquet" hidden />
+      </label>
+
+      <button id="btnBoostAudio" class="btn btn-accent" disabled>Listen (Boosted)</button>
+      <audio id="boostAudioPlayer" controls class="mini-audio hidden"></audio>
+    </div>
+  </header>
+
+  <div id="statusBar" class="status-bar">
+    <span id="statusText">Ready. Load a demo scenario or upload audio + ADS-B traces.</span>
+    <span id="metaBadges" class="meta-badges"></span>
+  </div>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="tab-spec">1. Spectrogram &amp; Curve Lab</button>
+    <button class="tab" data-tab="tab-locate">2. Geolocation &amp; Verification</button>
+    <button class="tab" data-tab="tab-counter">3. Countermeasures Lab</button>
+  </nav>
+
+  <main class="container">
+    <!-- TAB 1: SPECTROGRAM & CURVE LAB -->
+    <section id="tab-spec" class="tab-panel active">
+      <div class="grid-spec">
+        <div class="card spec-card">
+          <div class="card-header">
+            <div>
+              <h2>Whitened Low-Frequency Spectrogram</h2>
+              <span class="hint" id="specInteractionHint">Click spectrogram to auto-fit Event 1, or toggle Trace Mode for faint 1-min clips.</span>
+            </div>
+            <div class="spec-toolbar">
+              <label class="toggle-chip">
+                <input type="radio" name="clickTarget" value="ev1" checked /> Fit Event 1
+              </label>
+              <label class="toggle-chip">
+                <input type="radio" name="clickTarget" value="ev2" /> Fit Event 2
+              </label>
+              <label class="toggle-chip">
+                <input type="radio" name="clickTarget" value="trace" /> Trace Faint Points
+              </label>
+              <button id="btnClearTrace" class="btn btn-xs">Clear Trace (<span id="traceCount">0</span>)</button>
+            </div>
+          </div>
+          <div class="canvas-wrap">
+            <canvas id="specCanvas" width="960" height="420"></canvas>
+          </div>
+          <div class="spec-controls-row">
+            <label>Fmin (Hz) <input id="specFmin" type="number" value="40" min="10" max="200" /></label>
+            <label>Fmax (Hz) <input id="specFmax" type="number" value="360" min="100" max="950" /></label>
+            <label>Window (s) <input id="specWin" type="number" value="4.0" step="0.5" min="1.0" max="10.0" /></label>
+            <label class="checkbox-inline"><input id="specWhiten" type="checkbox" checked /> Noise Whitening</label>
+            <label class="checkbox-inline"><input id="showHarmonic" type="checkbox" checked /> Show 2f₀ Harmonic</label>
+            <button id="btnRecomputeSpec" class="btn btn-secondary btn-sm">Apply Zoom</button>
+          </div>
+        </div>
+
+        <div class="sidebar-stack">
+          <div class="card">
+            <div class="card-header">
+              <h3>Event 1 Parameters</h3>
+              <span class="pill pill-cyan">Primary</span>
+            </div>
+            <div class="form-grid">
+              <label>CPA Time (s) <input id="e1_tcpa" type="number" step="0.1" value="46.5" /></label>
+              <label>f₀ (Hz) <input id="e1_f0" type="number" step="0.5" value="132.0" /></label>
+              <label>V min (m/s) <input id="e1_vmin" type="number" step="1" value="55" /></label>
+              <label>V max (m/s) <input id="e1_vmax" type="number" step="1" value="105" /></label>
+              <label>Slant d min (m) <input id="e1_dmin" type="number" step="50" value="400" /></label>
+              <label>Slant d max (m) <input id="e1_dmax" type="number" step="50" value="2500" /></label>
+              <label>Time Tol ±(s) <input id="e1_ttol" type="number" step="0.5" value="6.0" /></label>
+              <label>f₀ Tol ±(Hz) <input id="e1_ftol" type="number" step="0.5" value="4.0" /></label>
+            </div>
+            <div class="slider-fit">
+              <label>Interactive Curve Preview Speed: <span id="e1_v_val">78</span> m/s
+                <input id="e1_v_slider" type="range" min="35" max="160" value="78" />
+              </label>
+              <label>Preview CPA Slant Distance: <span id="e1_d_val">1100</span> m
+                <input id="e1_d_slider" type="range" min="250" max="4500" step="50" value="1100" />
+              </label>
+            </div>
+          </div>
+
+          <div class="card" id="event2Card">
+            <div class="card-header">
+              <h3>Event 2 Parameters</h3>
+              <span class="pill pill-amber">Locked Offset</span>
+            </div>
+            <div class="form-grid">
+              <label>CPA Time (s) <input id="e2_tcpa" type="number" step="0.1" value="138.0" /></label>
+              <label>f₀ (Hz) <input id="e2_f0" type="number" step="0.5" value="114.5" /></label>
+              <label>V min (m/s) <input id="e2_vmin" type="number" step="1" value="45" /></label>
+              <label>V max (m/s) <input id="e2_vmax" type="number" step="1" value="90" /></label>
+              <label>Slant d min (m) <input id="e2_dmin" type="number" step="50" value="300" /></label>
+              <label>Slant d max (m) <input id="e2_dmax" type="number" step="50" value="2000" /></label>
+              <label>Time Tol ±(s) <input id="e2_ttol" type="number" step="0.5" value="6.0" /></label>
+              <label>f₀ Tol ±(Hz) <input id="e2_ftol" type="number" step="0.5" value="4.0" /></label>
+            </div>
+            <div class="slider-fit">
+              <label>Interactive Curve Preview Speed: <span id="e2_v_val">64</span> m/s
+                <input id="e2_v_slider" type="range" min="35" max="160" value="64" />
+              </label>
+              <label>Preview CPA Slant Distance: <span id="e2_d_val">800</span> m
+                <input id="e2_d_slider" type="range" min="250" max="4500" step="50" value="800" />
+              </label>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 2: GEOLOCATION SEARCH & VERIFICATION -->
+    <section id="tab-locate" class="tab-panel">
+      <div class="card control-ribbon">
+        <label>Mode
+          <select id="locMode" class="select-input">
+            <option value="two_event">Two-Event Locked Scoring</option>
+            <option value="single_event">Single-Event (Known UTC / Traced)</option>
+          </select>
+        </label>
+        <label>ICAO Filter
+          <select id="icaoFilter" class="select-input">
+            <option value="exclude_jets">Exclude Known Jets (Colsto Default)</option>
+            <option value="prop_only">Propeller / Turboprop Only</option>
+            <option value="all">All Aircraft</option>
+          </select>
+        </label>
+        <label>DEM Terrain
+          <select id="demMode" class="select-input">
+            <option value="auto">Auto (Scenario / Flat)</option>
+            <option value="open_meteo">Open-Meteo Real DEM</option>
+            <option value="flat">Flat 0m</option>
+          </select>
+        </label>
+        <label class="checkbox-inline">
+          <input id="silenceEnabled" type="checkbox" checked /> Silence Filter (10km)
+        </label>
+        <label id="utcTimeWrap" class="hidden">Known UTC CPA (Epoch s)
+          <input id="knownUtcInput" type="number" step="1" placeholder="e.g. 1725827830" />
+        </label>
+        <button id="btnRunLocate" class="btn btn-primary">Run Geolocation Pipeline</button>
+      </div>
+
+      <!-- Funnel Bar -->
+      <div id="funnelBar" class="funnel-bar">
+        <div class="funnel-step"><span>Total Tracks</span><strong id="fn_total">-</strong></div>
+        <div class="funnel-step"><span>Non-Jet Filter</span><strong id="fn_nonjet">-</strong></div>
+        <div class="funnel-step"><span>200m Grid (Ev 1)</span><strong id="fn_grid">-</strong></div>
+        <div class="funnel-step"><span>Time Offset</span><strong id="fn_offset">-</strong></div>
+        <div class="funnel-step"><span>Silence Filter</span><strong id="fn_silence">-</strong></div>
+        <div class="funnel-step"><span>100m Scored</span><strong id="fn_scored">-</strong></div>
+      </div>
+
+      <div class="grid-results">
+        <div class="card">
+          <div class="card-header">
+            <h3>Spatial Map &amp; 25m Fine Heatmap</h3>
+            <a id="gmapsLink" href="#" target="_blank" rel="noopener" class="btn btn-xs hidden">Open #1 in Google Maps</a>
+          </div>
+          <div id="mapContainer" class="map-box"></div>
+          <canvas id="fallbackMapCanvas" class="map-box hidden" width="600" height="360"></canvas>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h3 id="scatterTitle">Flight-Pair Peak Scores (Ev 1 vs Ev 2)</h3>
+            <span class="hint">Top-right cluster = best physics alignment</span>
+          </div>
+          <canvas id="scatterCanvas" width="540" height="360"></canvas>
+        </div>
+      </div>
+
+      <div class="grid-results">
+        <div class="card">
+          <div class="card-header">
+            <h3>Top Ranked Candidate Coordinates</h3>
+            <span id="gtEvalBadge" class="pill pill-green hidden"></span>
+          </div>
+          <div class="table-wrap">
+            <table id="resultsTable">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Coordinate (Lat, Lon)</th>
+                  <th>Elev</th>
+                  <th>Flight 1</th>
+                  <th>Flight 2</th>
+                  <th>Ev1</th>
+                  <th>Ev2</th>
+                  <th>Total</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h3>Retarded-Time Curve Overlay Inspector</h3>
+            <div class="spec-toolbar">
+              <select id="overlayRankSelect" class="select-input">
+                <option value="0">Rank #1</option>
+                <option value="1">Rank #2</option>
+                <option value="2">Rank #3</option>
+              </select>
+              <label class="checkbox-inline">
+                <input id="showNaiveToggle" type="checkbox" checked /> Show Naive (Unretarded) Error
+              </label>
+            </div>
+          </div>
+          <div class="overlay-pair">
+            <div>
+              <div class="overlay-label">Event 1 Spectrogram Patch</div>
+              <canvas id="overlayCanvas1" width="380" height="190"></canvas>
+            </div>
+            <div id="overlayBox2">
+              <div class="overlay-label">Event 2 Spectrogram Patch</div>
+              <canvas id="overlayCanvas2" width="380" height="190"></canvas>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 3: COUNTERMEASURES LAB -->
+    <section id="tab-counter" class="tab-panel">
+      <div class="card control-ribbon">
+        <label>Countermeasure Technique
+          <select id="cmMethod" class="select-input">
+            <option value="highpass_boost">High-Pass Filter + Lossy Codec + Boost Recovery</option>
+            <option value="speech_masking">Loud Background Speech / Broadband Masking</option>
+            <option value="steep_bandstop">Aggressive 8th-Order 450 Hz High-Pass (Destroys Voice)</option>
+            <option value="time_cut">Time-Cut Splice (Breaks Inter-Event Offset)</option>
+          </select>
+        </label>
+        <label>Parameter (Cutoff Hz / Mask SNR dB / Cut s)
+          <input id="cmParam" type="number" value="160" step="10" />
+        </label>
+        <button id="btnRunCm" class="btn btn-primary">Simulate &amp; Analyze</button>
+      </div>
+
+      <div class="grid-cm">
+        <div class="card">
+          <h3>Post-Countermeasure Whitened Spectrogram</h3>
+          <canvas id="cmCanvas" width="640" height="300"></canvas>
+        </div>
+        <div class="card">
+          <h3>Survivability Metrics</h3>
+          <div class="cm-metrics" id="cmMetrics">
+            <p class="hint">Run a countermeasure test to measure Doppler curve retention vs speech quality.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>
